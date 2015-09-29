@@ -95,7 +95,7 @@ class CInterrupt
       {
         m_handlers0[m_handlers0Size++] = in_handler;
       }
-      else if (in_interruptNumber == 0)
+      else if (in_interruptNumber == 1)
       {
         m_handlers1[m_handlers1Size++] = in_handler;
       }
@@ -131,7 +131,7 @@ void CInterrupt::OnInterrupt0()
 
 void CInterrupt::OnInterrupt1()
 {
-  for (int i = 0; i < Interrupt.m_handlers0Size; ++i)
+  for (int i = 0; i < Interrupt.m_handlers1Size; ++i)
   {
     if (Interrupt.m_handlers1[i] != NULL)
       Interrupt.m_handlers1[i]->OnInterrupt();
@@ -143,8 +143,8 @@ class PWMFan: public IInterruptHandler
 {
   public:
 
-    static const float MIN_TEMP_DELTA = 4; // degrees
-    static const float MAX_TEMP_DELTA = 5; // degrees
+    static const float MIN_TEMP_DELTA = 3; // degrees
+    static const float MAX_TEMP_DELTA = 6; // degrees
     static const float MAX_TEMP_NO_FAN = 28; // degrees
     
   public:
@@ -171,19 +171,21 @@ class PWMFan: public IInterruptHandler
       pinMode(m_motorPin, OUTPUT);
       digitalWrite(m_motorPin, LOW);
 
-      // init motor speed control
-      pinMode(m_pwmPin, OUTPUT);
-
-      //sets the frequency for the specified pin
-      bool success = SetPinFrequencySafe(m_pwmPin,  25 * 1000 /* hz */);
-
-      Serial.print("Fan ");
-      Serial.print(m_number, DEC);
-      Serial.print(": ");
-
-      Serial.print("Freq: " + success ? "true" : "false");
-
-
+      if (m_pwmPin >= 0)
+      {
+        // init motor speed control
+        pinMode(m_pwmPin, OUTPUT);
+  
+        //sets the frequency for the specified pin
+        bool success = SetPinFrequencySafe(m_pwmPin,  25 * 1000 /* hz */);
+  
+        Serial.print("Fan ");
+        Serial.print(m_number, DEC);
+        Serial.print(": ");
+  
+        Serial.print(String("Freq: ") + (success ? "true" : "false"));
+      }
+   
       // init hallsensor pin
       pinMode(m_hallSensorPin, INPUT_PULLUP);
 
@@ -192,59 +194,61 @@ class PWMFan: public IInterruptHandler
 
     void Step()
     {
-
-      float tempAverageOutside = m_controllerTemperatureOutside.GetTemperatureAveraged();
-      float tempAverage = m_controllerTemperature.GetTemperatureAveraged();
-      float tempDelta = tempAverage - tempAverageOutside - MIN_TEMP_DELTA;
-
-      Serial.print("Fan ");
-      Serial.print(m_number, DEC);
-      Serial.print(": ");
-
-      Serial.print("Temp av: " + String(tempAverage) + "\r\n");
-
-      Serial.print("Fan ");
-      Serial.print(m_number, DEC);
-      Serial.print(": ");
-
-      Serial.print("Temp avout: " + String(tempAverageOutside) + "\r\n");
-
-      // enable engine at all?
-      bool enableDC = ((tempDelta > TemperatureController::tempTresh) && tempAverage > MAX_TEMP_NO_FAN);
-      if (enableDC)
+      if (m_pwmPin >=  0)
       {
-        digitalWrite(m_motorPin, HIGH);
-        m_enabledDC = true;
-      } else if (tempDelta < - TemperatureController::tempTresh)
-      {
-        digitalWrite(m_motorPin, LOW);
-        m_enabledDC = false;
+        float tempAverageOutside = m_controllerTemperatureOutside.GetTemperatureAveraged();
+        float tempAverage = m_controllerTemperature.GetTemperatureAveraged();
+        float tempDelta = tempAverage - tempAverageOutside - MIN_TEMP_DELTA;
+  
+        Serial.print("Fan ");
+        Serial.print(m_number, DEC);
+        Serial.print(": ");
+  
+        Serial.print("Temp av: " + String(tempAverage) + "\r\n");
+  
+        Serial.print("Fan ");
+        Serial.print(m_number, DEC);
+        Serial.print(": ");
+  
+        Serial.print("Temp avout: " + String(tempAverageOutside) + "\r\n");
+  
+        // enable engine at all?
+        bool enableDC = ((tempDelta > TemperatureController::tempTresh) && tempAverage > MAX_TEMP_NO_FAN);
+        if (enableDC)
+        {
+          digitalWrite(m_motorPin, HIGH);
+          m_enabledDC = true;
+        } else if (tempDelta < - TemperatureController::tempTresh)
+        {
+          digitalWrite(m_motorPin, LOW);
+          m_enabledDC = false;
+        }
+  
+        if (!m_enabledDC)
+        {
+          pwmWrite(m_pwmPin, 0);
+          m_lowRMPWarning = false;
+          return;
+        }
+  
+        float speedCoeff = tempDelta / MAX_TEMP_DELTA;
+        if (speedCoeff > 1)
+          speedCoeff = 1;
+        else if (speedCoeff < 0)
+          speedCoeff = 0;
+  
+        float speed = pwmMin + speedCoeff * (pwmMax  - pwmMin);
+  
+  
+        pwmWrite(m_pwmPin, speed);
+  
+        Serial.print("Fan ");
+        Serial.print(m_number, DEC);
+        Serial.print(": ");
+  
+        Serial.print(String("Speed: ") + String(speed) + "\n");
       }
-
-      if (!m_enabledDC)
-      {
-        pwmWrite(m_pwmPin, 0);
-        m_lowRMPWarning = false;
-        return;
-      }
-
-      float speedCoeff = tempDelta / MAX_TEMP_DELTA;
-      if (speedCoeff > 1)
-        speedCoeff = 1;
-      else if (speedCoeff < 0)
-        speedCoeff = 0;
-
-      float speed = pwmMin + speedCoeff * (pwmMax  - pwmMin);
-
-
-      pwmWrite(m_pwmPin, speed);
-
-      Serial.print("Fan ");
-      Serial.print(m_number, DEC);
-      Serial.print(": ");
-
-      Serial.print(String("Speed: ") + String(speed) + "\n");
-
+    
       // update rotations info
       unsigned long currentTime = millis();
       if (currentTime > m_lastRPMUpdateTime)
@@ -348,11 +352,14 @@ const int HALLSENSOR1_PIN = 2;
 
 PWMFan fan1(0, MOTOR1_PIN, PWM1_PIN, HALLSENSOR1_PIN, controllerTemperature1, controllerTemperatureOutSide);
 
+
 const int MOTOR2_PIN = 10;
 const int PWM2_PIN = 11;
 const int HALLSENSOR2_PIN = 3;
 
-PWMFan fan2(1, MOTOR2_PIN, PWM2_PIN, HALLSENSOR2_PIN, controllerTemperature2, controllerTemperatureOutSide);
+// second fan will use the same PWM, that's why -1 there
+PWMFan fan2(1, MOTOR2_PIN, -1, HALLSENSOR2_PIN, controllerTemperature1, controllerTemperatureOutSide);
+
 
 const int WARNING_LED_PIN = 13;
 
@@ -369,7 +376,7 @@ void setup()
 
   fan1.Init();
   fan2.Init();
-
+  
   warningLed.Init();
   controllerTemperature1.Init();
   controllerTemperature2.Init();
@@ -386,7 +393,7 @@ void loop()
   fan1.Step();
   fan2.Step();
 
-  bool warning = (fan1.LowRPMWarning());// || fan2.LowRPMWarning());
+  bool warning = (fan1.LowRPMWarning() || fan2.LowRPMWarning());
   warningLed.Signal(warning);
 
   delay(1000);
